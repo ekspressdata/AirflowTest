@@ -1,0 +1,21 @@
+# Airflow-logger og runtime-støy
+logs/
+*.log
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Docker/lokale volumer (skulle de havne i mappen)
+*.pid
+
+# OS-spesifikt
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/

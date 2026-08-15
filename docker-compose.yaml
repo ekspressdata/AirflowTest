@@ -1,0 +1,109 @@
+# ============================================================
+# M1: Docker Compose - Airflow + Postgres, lokalt
+# ------------------------------------------------------------
+# To databaser holdes bevisst adskilt:
+#   - postgres-airflow : Airflows egen metadatabase (intern)
+#   - postgres-data    : VÅR datadatabase (staging, historikk, konsern)
+#
+# Start alt:     docker compose up -d
+# Se logg:       docker compose logs -f
+# Stopp:         docker compose down
+# Nullstill alt: docker compose down -v   (sletter også data!)
+#
+# Airflow-UI:    http://localhost:8080   (bruker: airflow / passord: airflow)
+# ============================================================
+
+x-airflow-common: &airflow-common
+  image: apache/airflow:2.10.4-python3.12
+  environment: &airflow-common-env
+    AIRFLOW__CORE__EXECUTOR: LocalExecutor
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres-airflow/airflow
+    AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
+    AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'true'
+    # Tilkoblingsstreng til VÅR datadatabase, tilgjengelig for DAG-ene
+    BRREG_DB_CONN: postgresql+psycopg2://data:data@postgres-data/brreg
+    _PIP_ADDITIONAL_REQUIREMENTS: 'requests psycopg2-binary sqlalchemy'
+  volumes:
+    - ./dags:/opt/airflow/dags
+    - ./logs:/opt/airflow/logs
+  depends_on:
+    postgres-airflow:
+      condition: service_healthy
+
+services:
+  # --- Airflow sin egen metadatabase (intern bruk) -----------
+  postgres-airflow:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: airflow
+      POSTGRES_DB: airflow
+    volumes:
+      - airflow-db-volume:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "airflow"]
+      interval: 5s
+      retries: 5
+    restart: always
+
+  # --- VÅR datadatabase (staging, historikk, konsern) --------
+  postgres-data:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: data
+      POSTGRES_PASSWORD: data
+      POSTGRES_DB: brreg
+    ports:
+      - "5433:5432"          # tilgjengelig fra Windows på localhost:5433
+    volumes:
+      - data-db-volume:/var/lib/postgresql/data
+      # skjemaet kjøres automatisk FØRSTE gang databasen opprettes
+      - ./init-db:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "data"]
+      interval: 5s
+      retries: 5
+    restart: always
+
+  # --- Init: setter opp Airflow-databasen og admin-brukeren ---
+  airflow-init:
+    <<: *airflow-common
+    entrypoint: /bin/bash
+    command:
+      - -c
+      - |
+        airflow db migrate
+        airflow users create \
+          --username airflow --password airflow \
+          --firstname Kyrre --lastname Indrebo \
+          --role Admin --email kyrre@ekspressdata.no || true
+    restart: on-failure
+
+  # --- Webserver (UI på :8080) -------------------------------
+  airflow-webserver:
+    <<: *airflow-common
+    command: webserver
+    ports:
+      - "8080:8080"
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8080/health"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+    restart: always
+
+  # --- Scheduler (kjører DAG-ene) ----------------------------
+  airflow-scheduler:
+    <<: *airflow-common
+    command: scheduler
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+    restart: always
+
+volumes:
+  airflow-db-volume:
+  data-db-volume:
